@@ -1,0 +1,40 @@
+# Root Git ignore for ISP Management Workspace
+
+# Node dependencies and debug logs
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+
+# OS / Editor junk
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+# Test and coverage artifacts
+coverage/
+**/playwright-report/
+**/test-results/
+
+# Logs
+*.log
+backend/logs/
+
+# Frontend build outputs and caches
+frontend/dist/
+frontend/dist-admin/
+frontend/dist-customer/
+frontend/.vite/
+frontend/.env
+
+# Backend sensitive/session files
+backend/whatsapp_session/
+backend/sessions.json
+backend/.env
+
+# Misc temporary files
+*~
+*.swp
+*.swo
