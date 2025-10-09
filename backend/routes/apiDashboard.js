@@ -1,0 +1,432 @@
+const express = require('express');
+const router = express.Router();
+const security = require('../middleware/security');
+const { getInterfaceTraffic, getInterfaces } = require('../config/mikrotik');
+const { getDevices, getDevice, findDeviceByPhoneNumber, getDeviceInfo } = require('../config/genieacs');
+
+// Import settings manager
+const { getSetting } = require('../config/settingsManager');
+
+// Apply security middleware
+router.use(security.securityLogger);
+router.use(security.developmentRateLimitBypass);
+// Mounted at /api/dashboard -> route path is /traffic
+router.get('/traffic', async (req, res) => {
+  // Check authentication - allow both admin and customer access
+  if (!req.session || (!req.session.isAdmin && !req.session.phone)) {
+    return res.status(401).json({
+      success: false,
+      message: 'Authentication required'
+    });
+  }
+  
+  // Ambil interface dari query - require explicit interface to avoid defaults
+  const iface = req.query.interface;
+  if (!iface) {
+    return res.status(400).json({ success: false, message: 'Missing required query parameter: interface' });
+  }
+  try {
+    const traffic = await getInterfaceTraffic(iface);
+    // If traffic is missing or zero, return 200 but include a helpful message
+    if (!traffic || (traffic.rx === 0 && traffic.tx === 0)) {
+      return res.json({ success: true, rx: 0, tx: 0, interface: iface, message: 'No traffic data available (router returned zero or missing fields)' });
+    }
+    res.json({ success: true, rx: traffic.rx, tx: traffic.tx, interface: iface });
+  } catch (e) {
+    console.error('[api/dashboard/traffic] Error:', e);
+    res.status(500).json({ success: false, rx: 0, tx: 0, message: e.message || 'Internal server error' });
+  }
+});
+
+// API: GET /api/dashboard/interfaces - Mendapatkan daftar interface yang tersedia
+// Mounted at /api/dashboard -> route path is /interfaces
+router.get('/interfaces', async (req, res) => {
+  // Admin only endpoint
+  if (!req.session || !req.session.isAdmin) {
+    return res.status(401).json({
+      success: false,
+      message: 'Admin authentication required'
+    });
+  }
+  
+  try {
+    const interfaces = await getInterfaces();
+    if (interfaces.success) {
+      // Filter interface: include most user-facing interfaces while excluding internal/system-only ones
+      const excludePrefixes = ['loopback', 'veth', 'dummy'];
+      const commonInterfaces = interfaces.data.filter(iface => {
+        const name = String(iface.name || '');
+        if (!name || name.trim().length === 0) return false;
+        const lname = name.toLowerCase();
+        if (excludePrefixes.some(p => lname.startsWith(p))) return false;
+        // Exclude purely numeric or unusual system names
+        if (/^\d+$/.test(lname)) return false;
+        // Otherwise include (this will include 'INPUT 1', 'PC', etc.)
+        return true;
+      });
+      
+      // Return discovered interfaces; caller must choose one explicitly
+      res.json({ 
+        success: true, 
+        interfaces: commonInterfaces.map(iface => ({
+          name: iface.name,
+          type: iface.type,
+          disabled: String(iface.disabled) === 'true',
+          running: String(iface.running) === 'true'
+        }))
+      });
+    } else {
+      console.error('[api/dashboard/interfaces] Mikrotik returned failure:', interfaces.message);
+      res.status(502).json({ success: false, interfaces: [], message: interfaces.message || 'Mikrotik returned failure' });
+    }
+  } catch (e) {
+    console.error('[api/dashboard/interfaces] Error:', e);
+    res.status(500).json({ success: false, interfaces: [], message: e.message || 'Internal server error' });
+  }
+});
+
+// ADMIN DEBUG: Raw interface list from Mikrotik (admin-only)
+router.get('/debug/raw-interfaces', async (req, res) => {
+  if (!req.session || !req.session.isAdmin) return res.status(401).json({ success: false, message: 'Admin authentication required' });
+  try {
+    const conn = await require('../config/mikrotik').getMikrotikConnection();
+    if (!conn) return res.status(500).json({ success: false, message: 'No Mikrotik connection' });
+    const raw = await conn.write('/interface/print');
+    res.json({ success: true, raw });
+  } catch (error) {
+    console.error('[api/dashboard/debug/raw-interfaces] Error:', error);
+    res.status(500).json({ success: false, message: error && error.message });
+  }
+});
+
+// ADMIN DEBUG: Raw monitor-traffic for specific interface (admin-only)
+router.get('/debug/raw-monitor', async (req, res) => {
+  if (!req.session || !req.session.isAdmin) return res.status(401).json({ success: false, message: 'Admin authentication required' });
+  const iface = req.query.interface;
+  if (!iface) return res.status(400).json({ success: false, message: 'Missing required query parameter: interface' });
+  try {
+    const conn = await require('../config/mikrotik').getMikrotikConnection();
+    if (!conn) return res.status(500).json({ success: false, message: 'No Mikrotik connection' });
+    // Quote if necessary
+    const needsQuotes = /[\s\"']/g.test(iface);
+    const ifaceArg = needsQuotes ? `=interface="${String(iface).replace(/"/g, '\\"')}"` : `=interface=${iface}`;
+    const raw = await conn.write('/interface/monitor-traffic', [ifaceArg, '=once=']);
+    res.json({ success: true, raw });
+  } catch (error) {
+    console.error('[api/dashboard/debug/raw-monitor] Error:', error && (error.stack || error.message || error));
+    res.status(500).json({ success: false, message: error && error.message });
+  }
+});
+
+// API: GET /api/map/devices - Mendapatkan data ONU untuk map
+router.get('/map/devices', async (req, res) => {
+  // Allow both admin and authenticated customer access
+  if (!req.session || (!req.session.isAdmin && !req.session.phone)) {
+    return res.status(401).json({
+      success: false,
+      message: 'Authentication required'
+    });
+  }
+  
+  try {
+    console.log('📍 Mengambil data ONU untuk map...');
+
+    // Ambil semua devices dari GenieACS
+    const devices = await getDevices();
+
+    if (!devices || devices.length === 0) {
+      return res.json({
+        success: true,
+        devices: [],
+        message: 'Tidak ada perangkat ONU yang ditemukan'
+      });
+    }
+
+    const mapDevices = [];
+
+    for (const device of devices) {
+      try {
+        // Ambil informasi dasar device
+        const deviceId = device._id;
+        const serialNumber = device.InternetGatewayDevice?.DeviceInfo?.SerialNumber?._value ||
+                            device.Device?.DeviceInfo?.SerialNumber?._value || 'N/A';
+        const Manufacturer = device.InternetGatewayDevice?.DeviceInfo?.Manufacturer?._value ||
+                            device.Device?.DeviceInfo?.Manufacturer?._value || 'N/A';
+
+        // Ambil informasi PPPoE username
+        const pppoeUsername = device.InternetGatewayDevice?.WANDevice?.[1]?.WANConnectionDevice?.[1]?.WANPPPConnection?.[1]?.Username?._value ||
+                             device.InternetGatewayDevice?.WANDevice?.[0]?.WANConnectionDevice?.[0]?.WANPPPConnection?.[0]?.Username?._value ||
+                             device.VirtualParameters?.pppoeUsername?._value || 'N/A';
+
+        // Ambil informasi lokasi dari tags atau virtual parameters
+        let location = null;
+
+        // Coba ambil dari VirtualParameters.location (format JSON)
+        if (device.VirtualParameters?.location?._value) {
+          try {
+            location = JSON.parse(device.VirtualParameters.location._value);
+          } catch (e) {
+            console.log(`Format lokasi tidak valid untuk device ${deviceId}`);
+          }
+        }
+
+        // Jika tidak ada di VirtualParameters, coba dari tags
+        if (!location && device._tags && Array.isArray(device._tags)) {
+          const locationTag = device._tags.find(tag => tag.startsWith('location:'));
+          if (locationTag) {
+            try {
+              const locationData = locationTag.replace('location:', '');
+              location = JSON.parse(locationData);
+            } catch (e) {
+              console.log(`Format lokasi dari tag tidak valid untuk device ${deviceId}`);
+            }
+          }
+        }
+
+        // Ambil informasi status dan sinyal
+        const lastInform = device._lastInform ? new Date(device._lastInform) : null;
+        const isOnline = lastInform && (new Date() - lastInform) < (24 * 60 * 60 * 1000); // Online jika inform dalam 24 jam
+
+        // Ambil RX Power
+        const rxPower = device.VirtualParameters?.rxpower?._value ||
+                        device.VirtualParameters?.redaman?._value ||
+                        device.InternetGatewayDevice?.WANDevice?.[1]?.WANPONInterfaceConfig?.RXPower?._value ||
+                        'N/A';
+
+        // Ambil nama pelanggan dari tags
+        const customerTags = device._tags ? device._tags.filter(tag =>
+          !tag.startsWith('location:') &&
+          !tag.startsWith('pppoe:') &&
+          tag.match(/^\d{10,15}$/) // Format nomor telepon
+        ) : [];
+
+        const customerPhone = customerTags.length > 0 ? customerTags[0] : 'N/A';
+
+        // Hanya tambahkan device yang memiliki lokasi
+        if (location && location.lat && location.lng) {
+          mapDevices.push({
+            id: deviceId,
+            serialNumber,
+            Manufacturer,
+            pppoeUsername,
+            customerPhone,
+            location: {
+              lat: parseFloat(location.lat),
+              lng: parseFloat(location.lng),
+              address: location.address || 'N/A'
+            },
+            status: {
+              isOnline,
+              lastInform: lastInform ? lastInform.toLocaleString('id-ID') : 'N/A',
+              rxPower: rxPower !== 'N/A' ? parseFloat(rxPower) : null
+            },
+            info: {
+              manufacturer: device.InternetGatewayDevice?.DeviceInfo?.Manufacturer?._value || 'N/A',
+              modelName: device.InternetGatewayDevice?.DeviceInfo?.ModelName?._value || 'N/A',
+              softwareVersion: device.InternetGatewayDevice?.DeviceInfo?.SoftwareVersion?._value || 'N/A',
+              serialNumber: device.InternetGatewayDevice?.DeviceInfo?.SerialNumber?._value || 'N/A'
+            }
+          });
+        }
+      } catch (deviceError) {
+        console.error(`Error memproses device ${device._id}:`, deviceError.message);
+        continue;
+      }
+    }
+
+    console.log(`📍 Berhasil memproses ${mapDevices.length} dari ${devices.length} perangkat ONU untuk map`);
+
+    res.json({
+      success: true,
+      devices: mapDevices,
+      total: mapDevices.length,
+      message: `Berhasil mengambil ${mapDevices.length} perangkat ONU untuk map`
+    });
+
+  } catch (error) {
+    console.error('❌ Error mengambil data ONU untuk map:', error.message);
+    res.status(500).json({
+      success: false,
+      devices: [],
+      message: 'Error mengambil data ONU: ' + error.message
+    });
+  }
+});
+
+// API: GET /api/map/customer/:phone - Mendapatkan data ONU pelanggan tertentu untuk map
+router.get('/map/customer/:phone', async (req, res) => {
+  // Allow both admin and authenticated customer access
+  if (!req.session || (!req.session.isAdmin && !req.session.phone)) {
+    return res.status(401).json({
+      success: false,
+      message: 'Authentication required'
+    });
+  }
+  
+  // If customer is authenticated, they can only access their own data
+  const requestedPhone = req.params.phone;
+  if (req.session.phone && req.session.phone !== requestedPhone) {
+    return res.status(403).json({
+      success: false,
+      message: 'Access denied - you can only view your own device data'
+    });
+  }
+  
+  try {
+    const phone = req.params.phone;
+    console.log(`🔍 Mencari ONU untuk pelanggan: ${phone}`);
+
+    // Validasi format nomor telepon
+    if (!phone || phone.length < 10) {
+      return res.status(400).json({
+        success: false,
+        message: 'Nomor telepon tidak valid'
+      });
+    }
+
+    // Import function yang sama seperti dashboard
+    const { getCustomerDeviceData } = require('./customerPortal');
+    
+    // Gunakan fungsi yang sama seperti dashboard untuk mendapatkan data lengkap
+    const customerData = await getCustomerDeviceData(phone);
+    
+    if (!customerData) {
+      console.log(`❌ Device tidak ditemukan untuk nomor ${phone}`);
+      return res.status(404).json({
+        success: false,
+        message: 'Perangkat ONU tidak ditemukan untuk nomor telepon ini. Pastikan nomor telepon sudah terdaftar di sistem dan ONU sudah terhubung ke GenieACS.'
+      });
+    }
+
+    console.log(`✅ Device ditemukan untuk ${phone}:`, customerData.serialNumber);
+
+    // Data customer sudah lengkap dari getCustomerDeviceData, sekarang cari lokasi
+    const { findDeviceByTag } = require('../config/addWAN');
+    let device;
+    try {
+      device = await findDeviceByTag(phone);
+    } catch (error) {
+      console.error(`❌ Error finding device by tag: ${error.message}`);
+      return res.status(500).json({
+        success: false,
+        message: 'Error mencari perangkat di GenieACS'
+      });
+    }
+
+    if (!device) {
+      return res.status(404).json({
+        success: false,
+        message: 'Perangkat tidak ditemukan di GenieACS'
+      });
+    }
+
+    const deviceId = device._id;
+    console.log(`🆔 Device ID: ${deviceId}`);
+
+    // Ambil lokasi dari beberapa sumber
+    let location = null;
+
+    // 1. Coba ambil dari VirtualParameters.location (format JSON)
+    if (device.VirtualParameters?.location?._value) {
+      try {
+        location = JSON.parse(device.VirtualParameters.location._value);
+        console.log(`📍 Lokasi ditemukan di VirtualParameters untuk ${phone}:`, location);
+      } catch (e) {
+        console.log(`❌ Format lokasi VirtualParameters tidak valid untuk device ${deviceId}`);
+      }
+    }
+
+    // 2. Jika tidak ada di VirtualParameters, coba dari tags
+    if (!location && device._tags && Array.isArray(device._tags)) {
+      const locationTag = device._tags.find(tag => tag.startsWith('location:'));
+      if (locationTag) {
+        try {
+          const locationData = locationTag.replace('location:', '');
+          location = JSON.parse(locationData);
+          console.log(`📍 Lokasi ditemukan di tags untuk ${phone}:`, location);
+        } catch (e) {
+          console.log(`❌ Format lokasi dari tag tidak valid untuk device ${deviceId}`);
+        }
+      }
+    }
+
+    // 3. Jika masih tidak ada, coba dari JSON file
+    if (!location) {
+      console.log(`🔄 Trying fallback: getting location from JSON file for device ${deviceId}`);
+      
+      const fs = require('fs');
+      const path = require('path');
+      const locationsFile = path.join(__dirname, '../logs/onu-locations.json');
+      
+      if (fs.existsSync(locationsFile)) {
+        try {
+          const locationsData = JSON.parse(fs.readFileSync(locationsFile, 'utf8'));
+          const locationFromFile = locationsData[deviceId];
+          
+          if (locationFromFile && locationFromFile.lat && locationFromFile.lng) {
+            location = {
+              lat: locationFromFile.lat,
+              lng: locationFromFile.lng,
+              address: locationFromFile.address || 'N/A'
+            };
+            console.log(`✅ Found location in JSON file for ${phone}:`, location);
+          }
+        } catch (fileError) {
+          console.log(`❌ Error reading JSON file: ${fileError.message}`);
+        }
+      }
+    }
+
+    // Jika tidak ada lokasi, berikan response khusus
+    if (!location || !location.lat || !location.lng) {
+      console.log(`❌ Tidak ada lokasi yang tersimpan untuk device ${deviceId}`);
+      return res.status(404).json({
+        success: false,
+        message: 'Data lokasi ONU belum tersedia. Silakan hubungi admin untuk menambahkan lokasi perangkat Anda.'
+      });
+    }
+
+    // Konversi status untuk kompatibilitas dengan map
+    const isOnline = customerData.status === 'Online';
+    
+    // Format response data menggunakan data lengkap dari dashboard
+    const responseData = {
+      success: true,
+      device: {
+        id: deviceId,
+        serialNumber: customerData.serialNumber || 'N/A',
+        manufacturer: customerData.Manufacturer || 'N/A',
+        pppoeUsername: customerData.pppoeUsername || 'N/A',
+        customerPhone: phone,
+        location: {
+          lat: parseFloat(location.lat),
+          lng: parseFloat(location.lng),
+          address: location.address || customerData.lokasi || 'N/A'
+        },
+        status: {
+          isOnline,
+          lastInform: customerData.lastInform || 'N/A',
+          rxPower: customerData.rxPower !== 'N/A' && customerData.rxPower !== '-' ? parseFloat(customerData.rxPower) : null
+        },
+        info: {
+          manufacturer: customerData.Manufacturer || 'N/A',
+          modelName: customerData.model || 'N/A',
+          softwareVersion: customerData.softwareVersion || 'N/A',
+          serialNumber: customerData.serialNumber || 'N/A',
+        }
+      }
+    };
+
+    console.log(`✅ Berhasil mengambil data lengkap ONU untuk pelanggan ${phone}`);
+    res.json(responseData);
+
+  } catch (error) {
+    console.error('❌ Error mengambil data ONU pelanggan:', error.message);
+    res.status(500).json({
+      success: false,
+      message: 'Error mengambil data ONU: ' + error.message
+    });
+  }
+});
+
+module.exports = router;

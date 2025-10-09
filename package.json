@@ -1,0 +1,50 @@
+{
+  "name": "isp-management-workspace",
+  "version": "1.0.0",
+  "description": "ISP Management System Workspace",
+  "private": true,
+  "scripts": {
+    "dev": "concurrently \"npm run start:backend\" \"npm run dev:admin\" \"npm run dev:customer\" --names \"backend,admin,customer\" --prefix-colors \"blue,red,green\"",
+    "start": "concurrently \"npm run start:backend\" \"npm run dev:admin\" \"npm run dev:customer\" --names \"backend,admin,customer\" --prefix-colors \"blue,red,green\"",
+    
+    "dev:admin": "cd frontend && pnpm run dev:admin",
+    "dev:customer": "cd frontend && pnpm run dev:customer",
+    "start:backend": "cd backend && node app.js",
+    
+    "dev:backend-only": "cd backend && node app.js",
+    "dev:admin-only": "cd frontend && pnpm run dev:admin",
+    "dev:customer-only": "cd frontend && pnpm run dev:customer",
+    
+    "dev:backend-customer": "concurrently \"npm run start:backend\" \"npm run dev:customer\" --names \"backend,customer\" --prefix-colors \"blue,green\"",
+    "dev:backend-admin": "concurrently \"npm run start:backend\" \"npm run dev:admin\" --names \"backend,admin\" --prefix-colors \"blue,red\"",
+    
+    "build": "cd frontend && pnpm build",
+    "build:admin": "cd frontend && pnpm build:admin",
+    "build:customer": "cd frontend && pnpm build:customer",
+    "preview:admin": "cd frontend && pnpm preview:admin",
+    "preview:customer": "cd frontend && pnpm preview:customer",
+    "install:frontend": "cd frontend && pnpm install",
+    "install:backend": "cd backend && pnpm install",
+    "install:all": "npm run install:backend && npm run install:frontend",
+    
+    "pm2:start": "pm2 start pm2.config.js",
+    "pm2:stop": "pm2 stop pm2.config.js",
+    "pm2:restart": "pm2 restart pm2.config.js",
+    "pm2:delete": "pm2 delete pm2.config.js",
+    "pm2:logs": "pm2 logs",
+    "pm2:status": "pm2 status",
+    "pm2:backend": "pm2 start pm2.backend.js",
+    "pm2:backend:stop": "pm2 stop isp-backend",
+    "pm2:backend:restart": "pm2 restart isp-backend",
+    "pm2:backend:delete": "pm2 delete isp-backend"
+  },
+  "devDependencies": {
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "pm2": "^5.4.3"
+  },
+  "workspaces": [
+    "frontend",
+    "backend"
+  ]
+}

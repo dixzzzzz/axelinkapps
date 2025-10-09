@@ -1,0 +1,21 @@
+# Backend-specific ignores
+
+# Dependencies
+node_modules/
+
+# Logs and runtime files
+logs/
+*.log
+sessions.json
+
+# WhatsApp/Baileys auth/session (must never be committed)
+whatsapp_session/
+
+# Environment files
+.env
+
+# OS/Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/

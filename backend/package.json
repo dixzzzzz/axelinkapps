@@ -1,0 +1,53 @@
+{
+  "name": "wa-admin-portal",
+  "version": "1.0.0",
+  "description": "Portal Admin WhatsApp Gateway untuk GenieACS, Mikrotik PPPoE, dan Hotspot Management",
+  "main": "app.js",
+  "scripts": {
+    "start": "cross-env NODE_ENV=production node app.js",
+    "dev": "cross-env NODE_ENV=development nodemon app.js",
+    "production": "cross-env NODE_ENV=production node app.js",
+    "dev:legacy": "nodemon app-legacy.js",
+    "test-server": "nodemon test-server.js",
+    "setup": "node setup-admin.js",
+    "detect-ip": "node ../detect-ip.js",
+    "update-ip": "node ../detect-ip.js --update-env",
+    "show-urls": "node ../detect-ip.js",
+    "validate-env": "node -e \"console.log('Environment validation passed')\" || exit 1"
+  },
+  "dependencies": {
+    "@hapi/boom": "^10.0.1",
+    "axios": "^1.6.7",
+    "baileys": "7.0.0-rc.3",
+    "bcrypt": "^6.0.0",
+    "connect-redis": "^7.1.0",
+    "cookie-parser": "^1.4.7",
+    "cors": "^2.8.5",
+    "csurf": "^1.11.0",
+    "dotenv": "^16.6.1",
+    "ejs": "^3.1.10",
+    "express": "^4.18.2",
+    "express-session": "^1.18.1",
+    "express-validator": "^7.2.1",
+    "helmet": "^8.1.0",
+    "leaflet": "^1.9.4",
+    "multer": "^2.0.1",
+    "mysql2": "^3.9.7",
+    "node-routeros": "^1.6.9",
+    "pino": "^8.11.0",
+    "qrcode": "^1.5.4",
+    "qrcode-terminal": "^0.12.0",
+    "redis": "^4.6.13",
+    "whatsapp-web.js": "^1.34.1",
+    "winston": "^3.8.2"
+  },
+  "devDependencies": {
+    "cross-env": "^7.0.3",
+    "nodemon": "^2.0.22"
+  },
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "author": "",
+  "license": "ISC"
+}
