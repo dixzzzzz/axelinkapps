@@ -34,6 +34,7 @@ import {
   History
 } from 'lucide-react';
 import { toast } from 'sonner';
+import { csrfManager } from '@/utils/csrf';
 
 interface SystemSettings {
   admin_username: string;
@@ -454,10 +455,13 @@ export default function Settings() {
     try {
       const formData = new FormData();
       formData.append('logo', logoFile);
-      
+      // Fetch CSRF token and include in headers
+      let csrfToken = '';
+      try { csrfToken = await csrfManager.getToken(); } catch {}
         const response = await fetch('/api/admin/settings/upload-logo', {
         method: 'POST',
         credentials: 'include',
+        headers: csrfToken ? { 'x-csrf-token': csrfToken } : undefined,
         body: formData
       });
       
@@ -917,6 +921,7 @@ export default function Settings() {
 
         {/* Logo Tab */}
         <TabsContent value="logo" className="space-y-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <Card>
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
@@ -935,7 +940,7 @@ export default function Settings() {
                         type="file"
                         accept="image/*,.svg"
                         onChange={handleLogoSelect}
-                        className="file:mr-4 file:py-2 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                        className="file:mr-4 file:px-4 file:rounded-full file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
                       />
                     </div>
                     <p className="text-sm text-gray-500 mt-1">
@@ -955,7 +960,7 @@ export default function Settings() {
                     {uploadingLogo ? 'Mengupload...' : 'Upload Logo'}
                   </Button>
                 </div>
-
+              
                 <div className="space-y-4">
                   <Label>Preview Logo</Label>
                   <div className="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center min-h-[200px] flex items-center justify-center">
@@ -979,6 +984,7 @@ export default function Settings() {
               </div>
             </CardContent>
           </Card>
+          </div>
         </TabsContent>
 
 
@@ -1038,10 +1044,8 @@ export default function Settings() {
                 </Button>
               </CardContent>
             </Card>
-          </div>
-
           {/* Backup History */}
-          <Card>
+          <Card className="mt-0 lg:col-span-2">
             <CardHeader>
               <CardTitle className="flex items-center gap-2">
                 <History className="h-5 w-5" />
@@ -1080,7 +1084,7 @@ export default function Settings() {
           </Card>
 
           {/* Activity Logs */}
-          <Card>
+          <Card className="mt-6 lg:col-span-2">
             <CardHeader>
               <CardTitle className="flex items-center justify-between">
                 <div className="flex items-center gap-2">
@@ -1126,6 +1130,7 @@ export default function Settings() {
               </div>
             </CardContent>
           </Card>
+          </div>
         </TabsContent>
       </Tabs>
     </div>
