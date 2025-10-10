@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { useAdminAuth } from '@/hooks/useAdminAuth';
 import { cn } from '@/lib/utils';
@@ -31,8 +31,8 @@ import {
   ChevronLeft,
   ChevronRight
 } from 'lucide-react';
-import logoLight from '/public/assets/logo.png';
-import logoDark from '/public/assets/logo.png';
+import logoLight from '/assets/logo.png';
+import logoDark from '/assets/logo.png';
 
 interface AdminLayoutProps {
   children: React.ReactNode;
@@ -60,6 +60,27 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
     return localStorage.getItem('adminTheme') === 'dark';
   });
 
+  // Notifications state
+  type NotifyItem = {
+    id: string;
+    title: string;
+    description?: string;
+    timestamp: string;
+    status: 'success' | 'warning' | 'error' | 'info';
+    source: 'activity' | 'device' | 'pppoe';
+    read?: boolean;
+    createdAt: number;
+  };
+  const [notifications, setNotifications] = useState<NotifyItem[]>([]);
+  const [unreadCount, setUnreadCount] = useState(0);
+  const [lastReadAt, setLastReadAt] = useState<number>(() => {
+    const v = localStorage.getItem('adminNotifications:lastReadAt');
+    return v ? parseInt(v) || 0 : 0;
+  });
+  const prevDeviceStatusRef = useRef<Record<string, 'online' | 'offline'>>({});
+  const prevPPPoeActiveRef = useRef<Record<string, boolean>>({});
+  const isPollingRef = useRef(false);
+
   // Effect for theme
   useEffect(() => {
     if (isDarkMode) {
@@ -69,6 +90,152 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
     }
     localStorage.setItem('adminTheme', isDarkMode ? 'dark' : 'light');
   }, [isDarkMode]);
+
+  // Helper to add notifications with de-dup by id
+  const pushNotifications = (items: NotifyItem[]) => {
+    if (!items.length) return;
+    setNotifications((prev) => {
+      const existingIds = new Set(prev.map((n) => n.id));
+      const merged = [...items.filter((i) => !existingIds.has(i.id)), ...prev];
+      // cap to last 50
+      const capped = merged.slice(0, 50);
+      // recompute unread based on lastReadAt
+      const unread = capped.filter((n) => n.createdAt > lastReadAt).length;
+      setUnreadCount(unread);
+      return capped;
+    });
+  };
+
+  const markAllRead = () => {
+    const now = Date.now();
+    setLastReadAt(now);
+    localStorage.setItem('adminNotifications:lastReadAt', String(now));
+    setNotifications((prev) => prev.map((n) => ({ ...n, read: true })));
+    setUnreadCount(0);
+  };
+
+  // Polling for activities/devices/pppoe
+  useEffect(() => {
+    let timer: number | undefined;
+
+    const poll = async () => {
+      if (isPollingRef.current) return;
+      isPollingRef.current = true;
+      try {
+        // Admin activities
+        try {
+          const resp = await fetch('/api/admin/activities', { credentials: 'include' });
+          const data = await resp.json();
+          if (data?.success && Array.isArray(data.activities)) {
+            const items: NotifyItem[] = data.activities.slice(0, 5).map((a: any) => ({
+              id: a.id || `act-${a.timestamp}-${a.title}`,
+              title: a.title || 'Activity',
+              description: a.description,
+              timestamp: a.timestamp || new Date().toLocaleString('id-ID'),
+              status: (a.status as any) || 'info',
+              source: 'activity',
+              createdAt: Date.now(),
+            }));
+            pushNotifications(items);
+          }
+        } catch {}
+
+        // Devices - detect online/offline transitions
+        try {
+          const resp = await fetch('/api/admin/genieacs/devices', { credentials: 'include' });
+          const data = await resp.json();
+          if (data?.success && Array.isArray(data.devices)) {
+            const prev = prevDeviceStatusRef.current;
+            const next: Record<string, 'online' | 'offline'> = {};
+            const deltas: NotifyItem[] = [];
+            for (const d of data.devices) {
+              const id = d.id || d.serialNumber;
+              const status = (d.status === 'online' ? 'online' : 'offline') as 'online' | 'offline';
+              next[id] = status;
+              if (prev[id] && prev[id] !== status) {
+                const becameOnline = status === 'online';
+                deltas.push({
+                  id: `dev-${id}-${status}-${Date.now()}`,
+                  title: becameOnline ? 'Device came back online' : 'Device went offline',
+                  description: `ONU ${d.serialNumber || id}`,
+                  timestamp: new Date().toLocaleString('id-ID'),
+                  status: becameOnline ? 'success' : 'error',
+                  source: 'device',
+                  createdAt: Date.now(),
+                });
+              }
+            }
+            prevDeviceStatusRef.current = next;
+            pushNotifications(deltas);
+          }
+        } catch {}
+
+        // PPPoE users - detect active/inactive changes
+        try {
+          const resp = await fetch('/api/admin/mikrotik/users/api', { credentials: 'include' });
+          const data = await resp.json();
+          if (data?.success && Array.isArray(data.users)) {
+            const prev = prevPPPoeActiveRef.current;
+            const next: Record<string, boolean> = {};
+            const deltas: NotifyItem[] = [];
+            for (const u of data.users) {
+              const username = u.username || '';
+              const active = !!u.active;
+              next[username] = active;
+              if (username in prev && prev[username] !== active) {
+                deltas.push({
+                  id: `ppp-${username}-${active ? 'active' : 'inactive'}-${Date.now()}`,
+                  title: active ? 'PPP user connected' : 'PPP user disconnected',
+                  description: `User ${username}`,
+                  timestamp: new Date().toLocaleString('id-ID'),
+                  status: active ? 'info' : 'warning',
+                  source: 'pppoe',
+                  createdAt: Date.now(),
+                });
+              }
+            }
+            prevPPPoeActiveRef.current = next;
+            pushNotifications(deltas);
+          }
+        } catch {}
+      } finally {
+        isPollingRef.current = false;
+        timer = window.setTimeout(poll, 30000); // 30s
+      }
+    };
+
+    // Prime initial state without generating notifications on first snapshot
+    (async () => {
+      try {
+        const [devResp, pppResp] = await Promise.all([
+          fetch('/api/admin/genieacs/devices', { credentials: 'include' }),
+          fetch('/api/admin/mikrotik/users/api', { credentials: 'include' }),
+        ]);
+        const [devJson, pppJson] = await Promise.all([devResp.json(), pppResp.json()]);
+        if (devJson?.success && Array.isArray(devJson.devices)) {
+          const snap: Record<string, 'online' | 'offline'> = {};
+          for (const d of devJson.devices) {
+            const id = d.id || d.serialNumber;
+            const status = (d.status === 'online' ? 'online' : 'offline') as 'online' | 'offline';
+            snap[id] = status;
+          }
+          prevDeviceStatusRef.current = snap;
+        }
+        if (pppJson?.success && Array.isArray(pppJson.users)) {
+          const snap: Record<string, boolean> = {};
+          for (const u of pppJson.users) {
+            snap[u.username] = !!u.active;
+          }
+          prevPPPoeActiveRef.current = snap;
+        }
+      } catch {}
+      poll();
+    })();
+
+    return () => {
+      if (timer) window.clearTimeout(timer);
+    };
+  }, []);
 
   // Handler Functions
   const handleLogout = async () => {
@@ -99,7 +266,7 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
               <Menu className="h-5 w-5" />
             </Button>
             <div className="w-32 h-auto flex-shrink-0">
-              <img src={isDarkMode ? logoDark : logoLight} alt="Customer Portal Logo" className="w-full h-auto object-contain" />
+              <img src={isDarkMode ? logoDark : logoLight} alt="Customer Portal Logo" className="w-32 h-8 object-contain" />
             </div>
           </div>
 
@@ -112,7 +279,7 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button variant="ghost" className={cn("flex items-center gap-2 px-3 py-2 h-10 rounded-lg transition-colors", isDarkMode ? "text-white hover:bg-gray-700 data-[state=open]:bg-gray-700" : "text-gray-900 hover:bg-gray-100 data-[state=open]:bg-gray-100")}>
-                  <div className="w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center">
+                  <div className="relative w-8 h-8 bg-blue-600 rounded-full flex items-center justify-center">
                     <User className="h-4 w-4 text-white" />
                   </div>
                   <span className="text-sm font-medium text-gray-700 dark:text-gray-300">
@@ -121,14 +288,44 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
                   <ChevronDown className="h-4 w-4" />
                 </Button>
               </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className={cn("w-56 mt-2", isDarkMode ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200")}>
-                <DropdownMenuItem className={cn("flex items-center gap-3 py-2", isDarkMode ? "hover:bg-gray-700 text-gray-200" : "hover:bg-gray-50")}>
-                  <div className="relative">
-                    <Bell className="h-4 w-4" />
-                    <span className="absolute -top-1 -right-1 h-3 w-3 bg-red-500 text-white text-xs rounded-full flex items-center justify-center text-[10px]">3</span>
+              <DropdownMenuContent align="end" className={cn("w-72 mt-2", isDarkMode ? "bg-gray-800 border-gray-700" : "bg-white border-gray-200")}> 
+                <div className="px-3 pt-2 pb-1 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <div className="relative">
+                      <Bell className="h-4 w-4" />
+                      {unreadCount > 0 && (
+                        <span className="absolute -top-1 -right-1 h-4 min-w-[16px] px-1 bg-red-500 text-white text-[10px] leading-4 rounded-full text-center">{unreadCount}</span>
+                      )}
+                    </div>
+                    <span className="text-sm">Notifications</span>
                   </div>
-                  <span>Notifications</span>
-                </DropdownMenuItem>
+                  <button onClick={markAllRead} className={cn("text-xs", isDarkMode ? "text-blue-300 hover:text-blue-200" : "text-blue-600 hover:text-blue-700")}>
+                    Mark all read
+                  </button>
+                </div>
+                <div className={cn("max-h-72 overflow-auto divide-y", isDarkMode ? "divide-gray-700" : "divide-gray-200")}> 
+                  {notifications.length === 0 ? (
+                    <div className="p-4 text-xs text-gray-500">No notifications</div>
+                  ) : (
+                    notifications.slice(0, 10).map((n) => (
+                      <div key={n.id} className={cn("px-3 py-2 text-xs", isDarkMode ? "hover:bg-gray-700" : "hover:bg-gray-50")}> 
+                        <div className="flex items-center justify-between">
+                          <span className="font-medium">{n.title}</span>
+                          <span className={cn("ml-2 px-1.5 py-0.5 rounded", 
+                            n.status === 'success' ? "bg-green-100 text-green-700" :
+                            n.status === 'error' ? "bg-red-100 text-red-700" :
+                            n.status === 'warning' ? "bg-orange-100 text-orange-700" :
+                            "bg-blue-100 text-blue-700"
+                          )}>
+                            {n.status}
+                          </span>
+                        </div>
+                        {n.description && <div className="mt-0.5 text-gray-600 dark:text-gray-300">{n.description}</div>}
+                        <div className="mt-0.5 text-[10px] text-gray-500">{n.timestamp}</div>
+                      </div>
+                    ))
+                  )}
+                </div>
                 <DropdownMenuItem asChild>
                   <Link to="/admin/settings" className={cn("flex items-center gap-3 py-2 w-full", isDarkMode ? "hover:bg-gray-700 text-gray-200" : "hover:bg-gray-50")}>
                     <Settings className="h-4 w-4" />
@@ -183,7 +380,7 @@ const AdminLayout: React.FC<AdminLayoutProps> = ({ children }) => {
           <div className={cn("flex items-center justify-between py-6 px-4 border-b flex-shrink-0 relative", isDarkMode ? "border-gray-700" : "border-gray-200")}>
             <div className="flex flex-1 justify-center">
               <div className={cn("flex flex-col items-center gap-1 transition-all duration-300", sidebarCollapsed ? "lg:opacity-0 lg:w-0 lg:overflow-hidden" : "opacity-100")}>
-                <div className="w-48 h-auto flex-shrink-0">
+                <div className="w-36 h-8 flex-shrink-0">
                   <img src={isDarkMode ? logoDark : logoLight} alt="AxeLink Logo" className="w-full h-auto object-contain" />
                 </div>
               </div>
