@@ -96,6 +96,63 @@ router.get('/verify', async (req, res) => {
     }
 });
 
+// API: Get Recent Admin Activities
+router.get('/activities', async (req, res) => {
+    if (!req.session || !req.session.isAdmin) {
+        return res.status(401).json({
+            success: false,
+            message: 'Admin authentication required'
+        });
+    }
+
+    try {
+        const redis = require('redis');
+        const client = redis.createClient({
+            socket: {
+                host: process.env.REDIS_HOST || 'localhost',
+                port: parseInt(process.env.REDIS_PORT) || 6379
+            },
+            password: process.env.REDIS_PASSWORD || undefined,
+            database: parseInt(process.env.REDIS_DB) || 0
+        });
+
+        await client.connect();
+
+        const key = 'admin:activities';
+        const activitiesRaw = await client.lRange(key, 0, 99);
+        await client.disconnect();
+
+        // Parse JSON and reverse to show newest first (lPush adds to head, so reverse)
+        const activities = activitiesRaw
+            .map(raw => {
+                try {
+                    return JSON.parse(raw);
+                } catch (err) {
+                    console.warn('Failed to parse activity JSON:', raw);
+                    return null;
+                }
+            })
+            .filter(activity => activity !== null)
+            .reverse();
+
+        res.json({
+            success: true,
+            activities: activities,
+            count: activities.length,
+            message: `Loaded ${activities.length} recent admin activities`
+        });
+
+    } catch (error) {
+        console.error('Error fetching admin activities:', error);
+        res.status(500).json({
+            success: false,
+            message: 'Failed to fetch admin activities',
+            activities: [],
+            error: process.env.NODE_ENV === 'development' ? error.message : undefined
+        });
+    }
+});
+
 // Shared cache for GenieACS devices (60 seconds cache)
 let genieacsDevicesCache = {
     data: null,
@@ -118,14 +175,22 @@ let cachedSettings = null;
 let settingsCacheTime = null;
 const SETTINGS_CACHE_DURATION = 30000; // 30 seconds
 
-// Multer configuration for logo uploads
+// Multer configuration for logo uploads - write directly to frontend/public/assets
 const storage = multer.diskStorage({
     destination: function (req, file, cb) {
-        cb(null, path.join(__dirname, '../public/img'));
+        try {
+            const assetsDir = path.join(__dirname, '..', '..', 'frontend', 'public', 'assets');
+            if (!fs.existsSync(assetsDir)) {
+                fs.mkdirSync(assetsDir, { recursive: true });
+            }
+            cb(null, assetsDir);
+        } catch (e) {
+            cb(e);
+        }
     },
     filename: function (req, file, cb) {
-        const ext = path.extname(file.originalname).toLowerCase();
-        cb(null, 'logo' + ext);
+        // Always overwrite logo.png (stable import path)
+        cb(null, 'logo.png');
     }
 });
 
@@ -1911,7 +1976,7 @@ router.post('/settings/upload-logo', upload.single('logo'), (req, res) => {
             });
         }
         
-        const logoPath = `/img/${req.file.filename}`;
+        const logoPath = `/assets/logo.png`;
         
         res.json({
             success: true,
@@ -2114,27 +2179,6 @@ router.post('/settings/whatsapp-delete', (req, res) => {
         });
     }
 });
-
-// API: Admin Logout
-router.post('/logout', (req, res) => {
-    req.session.destroy((err) => {
-        if (err) {
-            return res.status(500).json({
-                success: false,
-                message: 'Failed to logout'
-            });
-        }
-        
-        res.json({
-            success: true,
-            message: 'Logged out successfully'
-        });
-    });
-});
-
-// =========================
-// Trouble Reports API Routes
-// =========================
 
 // API: Get All Trouble Reports
 router.get('/trouble/reports', async (req, res) => {
