@@ -20,8 +20,8 @@ import {
 } from 'lucide-react';
 import { cn } from '@/lib/utils';
 
-import logoLight from '/public/assets/logo.png';
-import logoDark from '/public/assets/logo.png';
+import logoLight from '/assets/logo.png';
+import logoDark from '/assets/logo.png';
 
 interface CustomerLayoutProps {
   children: React.ReactNode;
@@ -85,7 +85,7 @@ const CustomerLayout: React.FC<CustomerLayoutProps> = ({ children }) => {
               <Menu className="h-5 w-5" />
             </Button>
             <div className="w-32 h-auto flex-shrink-0">
-              <img src={isDarkMode ? logoDark : logoLight} alt="Customer Portal Logo" className="w-full h-auto object-contain" />
+              <img src={isDarkMode ? logoDark : logoLight} alt="Customer Portal Logo" className="w-32 h-8 object-contain" />
             </div>
           </div>
           <div className="flex items-center gap-2">
