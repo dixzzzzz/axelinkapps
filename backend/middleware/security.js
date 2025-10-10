@@ -7,6 +7,32 @@ const helmet = require('helmet');
 const csrf = require('csurf');
 const { body, validationResult } = require('express-validator');
 const { logger } = require('../config/logger');
+const redis = require('redis');
+
+// Redis client for activity logging
+let redisClient = null;
+
+const getRedisClient = () => {
+    if (!redisClient) {
+        redisClient = redis.createClient({
+            socket: {
+                host: process.env.REDIS_HOST || 'localhost',
+                port: parseInt(process.env.REDIS_PORT) || 6379
+            },
+            password: process.env.REDIS_PASSWORD || undefined,
+            database: parseInt(process.env.REDIS_DB) || 0
+        });
+
+        redisClient.on('error', (err) => {
+            logger.warn('⚠️ Redis error for activity logging (fallback to memory):', err.message);
+        });
+
+        redisClient.connect().catch(err => {
+            logger.warn('⚠️ Failed to connect Redis for activity logging:', err.message);
+        });
+    }
+    return redisClient;
+};
 
 /**
  * Session regeneration middleware
@@ -29,7 +55,8 @@ const sessionRegeneration = {
             // Set user data after regeneration
             if (userType === 'admin') {
                 req.session.isAdmin = true;
-                req.session.adminUser = userData;
+                // Store only username string in session for consistency
+                req.session.adminUser = userData.username;
             } else if (userType === 'customer') {
                 req.session.phone = userData.phone;
                 req.session.isVerified = true;
@@ -46,6 +73,37 @@ const sessionRegeneration = {
                 }
 
                 logger.info(`✅ Session regenerated successfully for ${userType}: ${userData.phone || userData.username}`);
+
+                // Store admin login activity
+                if (userType === 'admin') {
+                    const activity = {
+                        id: `admin-login-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                        type: 'user',
+                        title: 'Admin login successful',
+                        description: `Admin ${userData.username} logged in`,
+                        timestamp: new Date().toLocaleString('id-ID'),
+                        status: 'success',
+                        ip: req.ip,
+                        userAgent: req.get('User-Agent'),
+                        username: userData.username
+                    };
+
+                    // Store in Redis
+                    try {
+                        const client = getRedisClient();
+                        const key = 'admin:activities';
+                        client.lPush(key, JSON.stringify(activity)).catch(err => {
+                            logger.warn('Failed to store admin login activity in Redis:', err.message);
+                        });
+                        // Keep only last 100 activities
+                        client.lTrim(key, 0, 99).catch(err => {
+                            logger.warn('Failed to trim admin activities in Redis:', err.message);
+                        });
+                    } catch (err) {
+                        logger.warn('Redis not available for activity logging:', err.message);
+                    }
+                }
+
                 next();
             });
         });
@@ -56,6 +114,7 @@ const sessionRegeneration = {
      */
     onLogout: (req, res, next) => {
         const sessionId = req.sessionID;
+        const usernameForLog = req.session?.adminUser || 'admin';
         
         req.session.destroy((err) => {
             if (err) {
@@ -68,6 +127,31 @@ const sessionRegeneration = {
 
             res.clearCookie('sessionId'); // Clear the session cookie
             logger.info(`✅ Session destroyed successfully: ${sessionId}`);
+
+            // Best-effort: log admin logout activity to Redis
+            try {
+                const activity = {
+                    id: `admin-logout-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
+                    type: 'user',
+                    title: 'Admin logout',
+                    description: `Admin ${usernameForLog} logged out`,
+                    timestamp: new Date().toLocaleString('id-ID'),
+                    status: 'info',
+                    ip: req.ip,
+                    userAgent: req.get('User-Agent'),
+                    username: usernameForLog
+                };
+                const client = getRedisClient();
+                const key = 'admin:activities';
+                client.lPush(key, JSON.stringify(activity)).catch(err => {
+                    logger.warn('Failed to store admin logout activity in Redis:', err.message);
+                });
+                client.lTrim(key, 0, 99).catch(err => {
+                    logger.warn('Failed to trim admin activities in Redis:', err.message);
+                });
+            } catch (e) {
+                logger.warn('Redis not available for logout activity logging:', e.message);
+            }
             next();
         });
     }
