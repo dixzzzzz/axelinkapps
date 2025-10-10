@@ -42,10 +42,10 @@ logger.info('✅ Configuration loaded from environment variables');
 // Dynamic CORS origins based on SERVER_IP environment variable
 const serverIP = process.env.SERVER_IP || 'localhost';
 const allowedOrigins = [
-    'http://localhost:2345/x/',        // Customer portal (local)
-    'http://localhost:5432/u/',        // Admin portal (localhost only)
-    'http://localhost:4173/u/',     // Admin portal
-    'http://localhost:4174/x/',     // Combined portal
+    'http://localhost:2345',        // Customer portal (local)
+    'http://localhost:5432',        // Admin portal (localhost only)
+    'http://localhost:4173',        // Admin portal (preview)
+    'http://localhost:4174',        // Customer portal (preview)
     'http://localhost:5173',        // Combined portal (legacy)
     'http://localhost:3003',        // Backend (local)
 ];
@@ -53,10 +53,10 @@ const allowedOrigins = [
 // Add dynamic server IP origins if not localhost
 if (serverIP !== 'localhost' && serverIP !== '127.0.0.1') {
     allowedOrigins.push(
-        `http://${serverIP}:5432/u/`,      // Admin portal (network IP)
-        `http://${serverIP}:2345/x/`,      // Customer portal (network IP) 
-        `http://${serverIP}:4173/u/`,      // Admin portal
-        `http://${serverIP}:4174/x/`,      // Combined portal
+        `http://${serverIP}:5432`,      // Admin portal (network IP)
+        `http://${serverIP}:2345`,      // Customer portal (network IP)
+        `http://${serverIP}:4173`,      // Admin portal (preview)
+        `http://${serverIP}:4174`,      // Customer portal (preview)
         `http://${serverIP}:3003`       // Backend (network IP)
     );
     
@@ -76,8 +76,8 @@ app.use(cors({
         'Content-Type', 
         'Authorization', 
         'X-Requested-With',
-        'x-csrf-token',  // ← Tambah ini
-        'csrf-token'     // ← Dan ini
+        'x-csrf-token',
+        'csrf-token'
     ]
 }));
 
@@ -238,18 +238,16 @@ const csrfExemptPatterns = {
         '/api/customer/change-password-2g',
         '/api/customer/change-password-5g',
         '/api/admin/genieacs/edit',
-        '/api/admin/genieacs/locations/add',
-        '/api/admin/genieacs/locations/{deviceId}',
-        '/api/admin/infrastructure/odp/:id',
-        '/api/admin/infrastructure/odc/:id',
+        '/api/admin/genieacs/locations',
+        '/api/admin/infrastructure/odp',
+        '/api/admin/infrastructure/odc',
         '/api/admin/settings/save',
         '/api/admin/settings/whatsapp-refresh',
         '/api/admin/settings/whatsapp-delete',
         '/api/admin/mikrotik/add-user',
         '/api/admin/mikrotik/edit-user',
         '/api/admin/mikrotik/delete-user',
-        '/api/admin/trouble/reports/:id/status',
-        '/api/admin/trouble/reports/:id/notes'
+        '/api/admin/trouble/reports'
     ]
 };
 
@@ -257,8 +255,9 @@ const csrfExemptPatterns = {
 const csrfExemptRoutes = Object.values(csrfExemptPatterns).flat();
 
 app.use((req, res, next) => {
-    // Skip CSRF for exempt routes (support exact and prefix matches)
+    // Skip CSRF for exempt routes (exact or prefix matches without placeholders)
     const isCsrfExempt = csrfExemptRoutes.some(route => {
+        if (route.endsWith('/')) return req.path.startsWith(route); // safety
         return req.path === route || req.path.startsWith(route + '/');
     });
     if (isCsrfExempt) {
