@@ -15,22 +15,6 @@
 
 ---
 
-**☕ Buy me a coffee**
-
-If you’d like to support the development of this project, you can do:
-
-BCA `4461269774` | Dikri Nurpadli
-
-❤️ Thank You
-
-Every bit of support helps me continue improving this project
-
-If you find this useful, please consider ⭐ starring the repo or buy me a coffee
-
-and you can text me to ask for more information https://wa.me/6281911290961 Dikri
-
----
-
 ## 🛠️ Prerequisites
 
 **System Requirements**
